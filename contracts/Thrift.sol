@@ -11,6 +11,9 @@ contract ThriftManager {
     // fee for defaulting thrift participants is sinked to the contract account
     uint256 public PENALTY_FEE = 0.001 ether;
 
+    // lock to guard reentrancy
+    bool lock;
+
     // constructor
     constructor() {
         admin = _msgSender();
@@ -207,7 +210,10 @@ contract ThriftManager {
     function _sendViaCall(address _to, uint256 amount) public payable {
         // Call returns a boolean value indicating success or failure.
         // This is the current recommended method to use.
+        require(!lock, "re-rentrant calls not allowed");
+        lock = true;
         (bool sent,) = payable(_to).call{value: amount}("");
+        lock = false;
         require(sent, "Failed to send Ether");
     }
 
