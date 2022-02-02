@@ -38,7 +38,6 @@ contract ThriftManager {
         mapping(address => uint256) hasStaked;
         mapping(uint256 => uint256) roundCompletionTime;                                // tracks when rounds are completed
         mapping(uint256 => bool) roundCompleted;                                        // track round completion incrementally
-        // mapping(uint256 => uint256) roundContributionCount;                          // tracks num of contribution per round
         mapping(uint256 => mapping(address => uint256)) roundContributionAmount;        // track  participants contribution for a given round
     }
 
@@ -107,7 +106,7 @@ contract ThriftManager {
         if(curRound == 0) {
             bool periodEllapsed = _timeStamp() > thrift.startTime + thrift.roundPeriod;
             if(periodEllapsed) {
-                // punish defaulters and close thrift***************
+                // punish defaulters and close thrift
                 for(uint i=0; i<numParticipants; i++) {
                     if(thrift.roundContributionAmount[curRound][thrift.contributorsRank[i]] > 0) {
                         address recipientContrib = thrift.contributorsRank[i];
@@ -121,7 +120,7 @@ contract ThriftManager {
         }else {
             bool periodEllapsed = _timeStamp() > thrift.roundCompletionTime[curRound-1] + thrift.roundPeriod;
             if(periodEllapsed) {
-                // punish defaulters and close thrift****************
+                // punish defaulters and close thrift
                 for(uint i=0; i<numParticipants; i++) {
                     if(thrift.roundContributionAmount[curRound][thrift.contributorsRank[i]] > 0) {
                         address recipientContrib = thrift.contributorsRank[i];
@@ -143,8 +142,6 @@ contract ThriftManager {
             // all rounds yet to complete
             if(curRound < numParticipants) {
                 // disburse funds to round collector and update round 
-                // ***
-                // *********************************************** //
                 address recipientContrib = thrift.contributorsRank[curRound];
                 _sendViaCall(recipientContrib, thrift.roundContributionAmount[curRound][recipientContrib]);
                 thrift.curRound += 1;
@@ -175,6 +172,18 @@ contract ThriftManager {
         }
         thrift.completed = true;
         return true;
+    }
+
+    // update penalty fee
+    function updatePenaltyFee(uint256 _newFees) external onlyAdmin() returns(bool) {
+        require(_newFees > 0, "Penalty fee must exceed zero");
+        PENALTY_FEE = _newFees;
+        return true;
+    }
+
+    // get the penalty fee
+    function getPenaltyFee() external view returns(uint256) {
+        return PENALTY_FEE;
     }
 
     // external agent can check if a thrift exists in the contract
@@ -234,7 +243,7 @@ contract ThriftManager {
         _;
     }
 
-    // prevent ether transfers for unknown contract call */
+    // prevent ether transfers for unknown contract call */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
     fallback() payable external {
         revert("Unknown contract call ETHER transfer rejected");
     }
