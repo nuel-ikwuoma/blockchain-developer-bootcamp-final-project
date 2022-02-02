@@ -8,9 +8,6 @@ contract ThriftManager {
     // tracks the thrift count explicitly and ID implicitly
     uint256 nextThriftId;
 
-    // fee for defaulting thrift participants is sinked to the contract account
-    uint256 public PENALTY_FEE = 0.001 ether;
-
     // lock to guard reentrancy
     bool lock;
 
@@ -37,16 +34,17 @@ contract ThriftManager {
         mapping(address => bool) contributors;
         mapping(address => uint256) hasStaked;
         mapping(uint256 => uint256) roundCompletionTime;                                // tracks when rounds are completed
+        mapping(uint256 => uint256) numContributionPerRound;                             // tracks number of conributors for any given round
         mapping(uint256 => bool) roundCompleted;                                        // track round completion incrementally
         mapping(uint256 => mapping(address => uint256)) roundContributionAmount;        // track  participants contribution for a given round
     }
 
     mapping(uint256 => Thrift) thrifts;
-    mapping(uint256 => uint256) thriftMinStake;                                         // track funds in any given thrift
+    mapping(uint256 => uint256) thriftMinStake;                                         // tracks minimum thrift stake amount
 
     // start a new thrift
     function createThrift(uint256 _maxParticipants, uint256 _roundAmount,uint256 _roundPeriod) payable external returns(bool) {
-        require(_maxParticipants > 0 && _maxParticipants <= 10, "Only one to ten participants allowed");
+        require(_maxParticipants > 1 && _maxParticipants <= 10, "Only two to ten participants allowed");
         require(_roundAmount > 0, "Round contribution must exceed zero");
         require(_roundPeriod > 0, "Round period must exceed zero");
         Thrift storage newThrift = thrifts[nextThriftId];
@@ -57,7 +55,7 @@ contract ThriftManager {
         newThrift.creator = _msgSender();
         newThrift.roundPeriod = _roundPeriod;
         newThrift.startTime = _timeStamp();
-        uint256 _minStake = (_maxParticipants * _roundAmount) + PENALTY_FEE;
+        uint256 _minStake = _maxParticipants * _roundAmount;
         newThrift.minStake = _minStake;
         thriftMinStake[nextThriftId] = _minStake;
         // creator should deposit minimum stake
@@ -106,34 +104,17 @@ contract ThriftManager {
         if(curRound == 0) {
             bool periodEllapsed = _timeStamp() > thrift.startTime + thrift.roundPeriod;
             if(periodEllapsed) {
-                // punish defaulters and close thrift
-                for(uint i=0; i<numParticipants; i++) {
-                    if(thrift.roundContributionAmount[curRound][thrift.contributorsRank[i]] > 0) {
-                        address recipientContrib = thrift.contributorsRank[i];
-                        uint256 amount = thrift.roundContributionAmount[i][recipientContrib] + thrift.minStake;
-                        _sendViaCall(recipientContrib, amount);
-                    }
-                }
-                thrift.completed = true;
-                return false;
+                return !_endDefaultingThrift(_thriftID, curRound, numParticipants);
             }
         }else {
             bool periodEllapsed = _timeStamp() > thrift.roundCompletionTime[curRound-1] + thrift.roundPeriod;
             if(periodEllapsed) {
-                // punish defaulters and close thrift
-                for(uint i=0; i<numParticipants; i++) {
-                    if(thrift.roundContributionAmount[curRound][thrift.contributorsRank[i]] > 0) {
-                        address recipientContrib = thrift.contributorsRank[i];
-                        uint256 amount = thrift.roundContributionAmount[i][recipientContrib] + thrift.minStake;
-                        _sendViaCall(recipientContrib, amount);
-                    }
-                }
-                thrift.completed = true;
-                return false;
+                return !_endDefaultingThrift(_thriftID, curRound, numParticipants);
             }
         }
         thrift.roundContributionCount += 1;
         thrift.roundContributionAmount[curRound][_msgSender()] = _msgValue();
+        thrift.numContributionPerRound[curRound] += 1;
         
         // last contribution sholud update relevant thrift state information and disburse funds
         if(thrift.roundContributionCount == numParticipants) {
@@ -141,7 +122,8 @@ contract ThriftManager {
             thrift.roundCompletionTime[curRound] = _timeStamp();
             // disburse funds to round collector and update round 
             address recipientContrib = thrift.contributorsRank[curRound];
-            _sendViaCall(recipientContrib, thrift.roundContributionAmount[curRound][recipientContrib]);
+            uint256 amount = thrift.roundAmount * numParticipants;
+            _sendViaCall(recipientContrib, amount);
             thrift.curRound += 1;
         }
         // thrift is completed
@@ -159,28 +141,7 @@ contract ThriftManager {
         bool completed = thrift.completed;
         bool deadline = _timeStamp() > thrift.startTime + (thrift.roundPeriod * thrift.numParticipants);
         require(!completed && deadline, "Thrift already completed or deadline not exceeded");
-        // check for defaulters and apply punishment
-        for(uint i=0; i<thrift.numParticipants; i++) {
-            uint256 contribAmount = thrift.roundContributionAmount[thrift.curRound][thrift.contributorsRank[i]];
-            if(contribAmount > 0) {
-                uint256 amount = contribAmount + thrift.minStake;
-                _sendViaCall(thrift.contributorsRank[i], amount);
-            }
-        }
-        thrift.completed = true;
-        return true;
-    }
-
-    // update penalty fee
-    function updatePenaltyFee(uint256 _newFees) external onlyAdmin() returns(bool) {
-        require(_newFees > 0, "Penalty fee must exceed zero");
-        PENALTY_FEE = _newFees;
-        return true;
-    }
-
-    // get the penalty fee
-    function getPenaltyFee() external view returns(uint256) {
-        return PENALTY_FEE;
+        return _endDefaultingThrift(_thriftID, thrift.curRound, thrift.numParticipants);
     }
 
     // get thrift minStake
@@ -221,6 +182,22 @@ contract ThriftManager {
     function _hasCompleted(uint256 _thriftID) internal view thriftExists(_thriftID) returns(bool) {
         Thrift storage thrift = thrifts[_thriftID];
         return thrift.completed;
+    }
+
+    function _endDefaultingThrift(uint256 _thriftID, uint256 _curRound, uint256 _numParticipants) internal thriftExists(_thriftID) returns(bool) {
+        Thrift storage thrift = thrifts[_thriftID];
+        uint256 numRoundContributors = thrift.numContributionPerRound[_curRound];
+        uint256 penaltyFee = (thrift.minStake * _numParticipants) / numRoundContributors;
+        for(uint i=0; i<_numParticipants; i++) {
+            address recipientContrib = thrift.contributorsRank[i];
+            uint256 contributorAmount = thrift.roundContributionAmount[_curRound][recipientContrib];
+            if(contributorAmount > 0) {
+                uint256 payoutAmount = contributorAmount + penaltyFee;
+                _sendViaCall(recipientContrib, payoutAmount);
+            }
+        }
+        thrift.completed = true;
+        return true;
     }
     
 

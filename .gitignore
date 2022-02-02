@@ -1,4 +1,1 @@
-build/contracts
-build/contracts/**
-build/contracts/ThriftManager.json
-build/contracts/Migrations.json
+build/
