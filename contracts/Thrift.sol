@@ -42,7 +42,7 @@ contract ThriftManager {
     }
 
     mapping(uint256 => Thrift) thrifts;
-    mapping(uint256 => uint256) thriftBalances;                                         // track funds in any given thrift
+    mapping(uint256 => uint256) thriftMinStake;                                         // track funds in any given thrift
 
     // start a new thrift
     function createThrift(uint256 _maxParticipants, uint256 _roundAmount,uint256 _roundPeriod) payable external returns(bool) {
@@ -59,6 +59,7 @@ contract ThriftManager {
         newThrift.startTime = _timeStamp();
         uint256 _minStake = (_maxParticipants * _roundAmount) + PENALTY_FEE;
         newThrift.minStake = _minStake;
+        thriftMinStake[nextThriftId] = _minStake;
         // creator should deposit minimum stake
         require(_msgValue() >= _minStake, "Send Ether amount equivalent to minimum stake");
         newThrift.contributorsRank[0] = payable(_msgSender());
@@ -177,10 +178,14 @@ contract ThriftManager {
         return true;
     }
 
-    // get the penalty fee        // This is the current recommended method to use.
-
+    // get the penalty fee
     function getPenaltyFee() external view returns(uint256) {
         return PENALTY_FEE;
+    }
+
+    // get thrift minStake
+    function getMinStake(uint256 _thriftID) thriftExists(_thriftID) external view returns(uint256) {
+        return thriftMinStake[_thriftID];
     }
 
     // external agent can check if a thrift exists in the contract
