@@ -57,7 +57,6 @@ contract ThriftManager {
         newThrift.creator = _msgSender();
         newThrift.roundPeriod = _roundPeriod;
         newThrift.startTime = _timeStamp();
-        // calculate the minstake = maxParticipants * roundAmount
         uint256 _minStake = (_maxParticipants * _roundAmount) + PENALTY_FEE;
         newThrift.minStake = _minStake;
         // creator should deposit minimum stake
@@ -70,7 +69,6 @@ contract ThriftManager {
     }
 
     //  join a thrift with minimum stake deposit
-    // ** check that is not contributor lready
     function joinThrift(uint256 _thriftID) payable external thriftExists(_thriftID) thriftNotStarted(_thriftID) returns(bool) {
         if(_isContributor(_thriftID, _msgSender())) {
             return false;
@@ -97,6 +95,7 @@ contract ThriftManager {
     function contributeToThrift(uint256 _thriftID) payable external thriftExists(_thriftID) returns(bool) {
         require(_isContributor(_thriftID, _msgSender()), "Address not a contributor");
         require(_hasStarted(_thriftID), "Thrift contribution is yet to start");
+        require(!_hasCompleted(_thriftID), "Thrift has been completed");
         Thrift storage thrift = thrifts[_thriftID];
         uint256 numParticipants = thrift.numParticipants;
         uint256 curRound = thrift.curRound;
@@ -135,17 +134,14 @@ contract ThriftManager {
         thrift.roundContributionCount += 1;
         thrift.roundContributionAmount[curRound][_msgSender()] = _msgValue();
         
-        // last contribution shold update relevant thrift state information and disburse funds
+        // last contribution sholud update relevant thrift state information and disburse funds
         if(thrift.roundContributionCount == numParticipants) {
             thrift.roundCompleted[curRound] = true;
             thrift.roundCompletionTime[curRound] = _timeStamp();
-            // all rounds yet to complete
-            if(curRound < numParticipants) {
-                // disburse funds to round collector and update round 
-                address recipientContrib = thrift.contributorsRank[curRound];
-                _sendViaCall(recipientContrib, thrift.roundContributionAmount[curRound][recipientContrib]);
-                thrift.curRound += 1;
-            }
+            // disburse funds to round collector and update round 
+            address recipientContrib = thrift.contributorsRank[curRound];
+            _sendViaCall(recipientContrib, thrift.roundContributionAmount[curRound][recipientContrib]);
+            thrift.curRound += 1;
         }
         // thrift is completed
         if(++curRound == numParticipants) {
@@ -181,7 +177,8 @@ contract ThriftManager {
         return true;
     }
 
-    // get the penalty fee
+    // get the penalty fee        // This is the current recommended method to use.
+
     function getPenaltyFee() external view returns(uint256) {
         return PENALTY_FEE;
     }
@@ -192,7 +189,7 @@ contract ThriftManager {
     }
 
 
-    // HELPERS
+    // CONTRACT HELPERS
     //
     function _msgSender() internal view returns(address) {
         return msg.sender;
@@ -216,9 +213,13 @@ contract ThriftManager {
         return thrift.start;
     }
 
+    function _hasCompleted(uint256 _thriftID) internal view thriftExists(_thriftID) returns(bool) {
+        Thrift storage thrift = thrifts[_thriftID];
+        return thrift.completed;
+    }
+    
+
     function _sendViaCall(address _to, uint256 amount) public payable {
-        // Call returns a boolean value indicating success or failure.
-        // This is the current recommended method to use.
         require(!lock, "re-rentrant calls not allowed");
         lock = true;
         (bool sent,) = payable(_to).call{value: amount}("");
@@ -226,7 +227,7 @@ contract ThriftManager {
         require(sent, "Failed to send Ether");
     }
 
-    // MODIFIERS
+    // CONTRACT MODIFIERS
     //
     modifier onlyAdmin() {
         require(_msgSender() == admin, "Sender is not an admin");
