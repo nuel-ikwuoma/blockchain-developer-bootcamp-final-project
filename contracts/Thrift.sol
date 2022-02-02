@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity >=0.4.22 <0.9.0;
+pragma solidity ^0.8.1;
 
 contract ThriftManager {
     // address with priviledge to adjust contract parameters
@@ -218,6 +218,7 @@ contract ThriftManager {
     }
 
     // MODIFIERS
+    //
     modifier onlyAdmin() {
         require(_msgSender() == admin, "Sender is not an admin");
         _;
@@ -233,8 +234,13 @@ contract ThriftManager {
         _;
     }
 
-    // prevent forceful ether transfers */
+    // prevent ether transfers for unknown contract call */
     fallback() payable external {
-        revert("Do Not force Send ETHER directly to this contract");
+        revert("Unknown contract call ETHER transfer rejected");
+    }
+
+    // prevent forceful ETHER transfers on empty msg.data
+    receive() external payable {
+        revert("Forceful ETHER transfer rejected");
     }
 }
