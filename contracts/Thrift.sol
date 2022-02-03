@@ -39,39 +39,49 @@ contract ThriftManager {
         mapping(uint256 => mapping(address => uint256)) roundContributionAmount;        // track  participants contribution for a given round
     }
 
-    mapping(uint256 => Thrift) thrifts;
+    mapping(uint256 => Thrift) public thrifts;
     mapping(uint256 => uint256) thriftMinStake;                                         // tracks minimum thrift stake amount
 
+    // EVENTS
+    //
+    event ThriftCreated(uint256 id, uint256 maxParticipants, uint256 minStake, uint256 rouundAmt, uint256 createdAt);
+    event ContributorJoined(uint256 id, address contribAddress);
+    event CloseThrift(uint256 id);
+    event EndDefaultingThrift(uint256 id);
+
     // start a new thrift
-    function createThrift(uint256 _maxParticipants, uint256 _roundAmount,uint256 _roundPeriod) payable external returns(bool) {
-        require(_maxParticipants > 1 && _maxParticipants <= 10, "Only two to ten participants allowed");
-        require(_roundAmount > 0, "Round contribution must exceed zero");
-        require(_roundPeriod > 0, "Round period must exceed zero");
-        Thrift storage newThrift = thrifts[nextThriftId];
-        newThrift.id = nextThriftId;
-        newThrift.maxParticipants = _maxParticipants;
-        newThrift.numParticipants = 1;
-        newThrift.roundAmount = _roundAmount;
-        newThrift.creator = _msgSender();
-        newThrift.roundPeriod = _roundPeriod;
-        newThrift.startTime = _timeStamp();
-        uint256 _minStake = _maxParticipants * _roundAmount;
-        newThrift.minStake = _minStake;
-        thriftMinStake[nextThriftId] = _minStake;
-        // creator should deposit minimum stake
-        require(_msgValue() >= _minStake, "Send Ether amount equivalent to minimum stake");
-        newThrift.contributorsRank[0] = payable(_msgSender());
-        newThrift.contributors[_msgSender()] = true;
-        newThrift.hasStaked[_msgSender()] = _msgValue();
-        nextThriftId++;
-        return true;
+    function createThrift(uint256 _maxParticipants, uint256 _roundAmount,uint256 _roundPeriod)
+        payable
+        external
+        returns(uint256, uint256, uint256, uint256, uint256) {
+            require(_maxParticipants > 1 && _maxParticipants <= 10, "Only two to ten participants allowed");
+            require(_roundAmount > 0, "Round contribution must exceed zero");
+            require(_roundPeriod > 0, "Round period must exceed zero");
+            Thrift storage newThrift = thrifts[nextThriftId];
+            uint _thriftID = nextThriftId;
+            newThrift.id = _thriftID;
+            newThrift.maxParticipants = _maxParticipants;
+            newThrift.numParticipants = 1;
+            newThrift.roundAmount = _roundAmount;
+            newThrift.creator = _msgSender();
+            newThrift.roundPeriod = _roundPeriod;
+            newThrift.startTime = _timeStamp();
+            uint256 _minStake = _maxParticipants * _roundAmount;
+            newThrift.minStake = _minStake;
+            thriftMinStake[nextThriftId] = _minStake;
+            // creator should deposit minimum stake
+            require(_msgValue() >= _minStake, "Send Ether amount equivalent to minimum stake");
+            newThrift.contributorsRank[0] = payable(_msgSender());
+            newThrift.contributors[_msgSender()] = true;
+            newThrift.hasStaked[_msgSender()] = _msgValue();
+            nextThriftId++;
+            emit ThriftCreated(_thriftID, _maxParticipants, _minStake, _roundAmount, _timeStamp());
+            return (_thriftID, _maxParticipants, _minStake, _roundAmount, _timeStamp());
     }
 
     //  join a thrift with minimum stake deposit
     function joinThrift(uint256 _thriftID) payable external thriftExists(_thriftID) thriftNotStarted(_thriftID) returns(bool) {
-        if(_isContributor(_thriftID, _msgSender())) {
-            return false;
-        }
+        require(!_isContributor(_thriftID, _msgSender()), "Address already a thrift contributor");
         require(!_hasStarted(_thriftID), "Thrift already started");
         Thrift storage thrift = thrifts[_thriftID];
         uint256 position = thrift.numParticipants;
@@ -84,6 +94,7 @@ contract ThriftManager {
             return true;
         }else if(thrift.numParticipants == (thrift.maxParticipants)) {  // start thrift once max participantis reached
             thrift.start = true;
+            emit ContributorJoined(_thriftID, _msgSender());
             return true;
         }else {                                                         // revert if max participants exceeded
             revert("Max participants reached already");
@@ -104,11 +115,13 @@ contract ThriftManager {
         if(curRound == 0) {
             bool periodEllapsed = _timeStamp() > thrift.startTime + thrift.roundPeriod;
             if(periodEllapsed) {
+                emit EndDefaultingThrift(_thriftID);
                 return !_endDefaultingThrift(_thriftID, curRound, numParticipants);
             }
         }else {
             bool periodEllapsed = _timeStamp() > thrift.roundCompletionTime[curRound-1] + thrift.roundPeriod;
             if(periodEllapsed) {
+                emit EndDefaultingThrift(_thriftID);
                 return !_endDefaultingThrift(_thriftID, curRound, numParticipants);
             }
         }
@@ -128,6 +141,7 @@ contract ThriftManager {
         }
         // thrift is completed
         if(++curRound == numParticipants) {
+            emit CloseThrift(_thriftID);
             thrift.completed = true;
         }
         return true;
@@ -141,6 +155,7 @@ contract ThriftManager {
         bool completed = thrift.completed;
         bool deadline = _timeStamp() > thrift.startTime + (thrift.roundPeriod * thrift.numParticipants);
         require(!completed && deadline, "Thrift already completed or deadline not exceeded");
+        emit EndDefaultingThrift(_thriftID);
         return _endDefaultingThrift(_thriftID, thrift.curRound, thrift.numParticipants);
     }
 
