@@ -3,10 +3,10 @@ pragma solidity ^0.8.1;
 
 contract ThriftManager {
     // address with priviledge to adjust contract parameters
-    address admin;
+    address public admin;
 
     // tracks the thrift count explicitly and ID implicitly
-    uint256 nextThriftId;
+    uint256 public nextThriftId;
 
     // lock to guard reentrancy
     bool lock;
@@ -65,7 +65,7 @@ contract ThriftManager {
             newThrift.roundAmount = _roundAmount;
             newThrift.creator = _msgSender();
             newThrift.roundPeriod = _roundPeriod;
-            newThrift.startTime = _timeStamp();
+            // newThrift.startTime = _timeStamp();      // instead should start when the last contributor joined
             uint256 _minStake = _maxParticipants * _roundAmount;
             newThrift.minStake = _minStake;
             thriftMinStake[nextThriftId] = _minStake;
@@ -88,12 +88,14 @@ contract ThriftManager {
         thrift.numParticipants += 1;
         require(_msgValue() >= thrift.minStake, "Send Ether amount equivalent to minimum stake");
         thrift.contributorsRank[position] = payable(_msgSender());
+        thrift.contributors[_msgSender()] = true;
         thrift.hasStaked[_msgSender()] = _msgValue();
         // check if maximum participants is reached
         if(thrift.numParticipants < (thrift.maxParticipants)) {
             return true;
         }else if(thrift.numParticipants == (thrift.maxParticipants)) {  // start thrift once max participantis reached
             thrift.start = true;
+            thrift.startTime = _timeStamp();
             emit ContributorJoined(_thriftID, _msgSender());
             return true;
         }else {                                                         // revert if max participants exceeded
@@ -113,13 +115,13 @@ contract ThriftManager {
         require(_msgValue() > 0 && _msgValue() >= thrift.roundAmount, "Ether sent must exceed zero and rount amount");
         // account for rouund period and close thrift if its been ellapsed
         if(curRound == 0) {
-            bool periodEllapsed = _timeStamp() > thrift.startTime + thrift.roundPeriod;
+            bool periodEllapsed = _timeStamp() > (thrift.startTime + thrift.roundPeriod);
             if(periodEllapsed) {
                 emit EndDefaultingThrift(_thriftID);
                 return !_endDefaultingThrift(_thriftID, curRound, numParticipants);
             }
         }else {
-            bool periodEllapsed = _timeStamp() > thrift.roundCompletionTime[curRound-1] + thrift.roundPeriod;
+            bool periodEllapsed = _timeStamp() > (thrift.roundCompletionTime[curRound-1] + thrift.roundPeriod);
             if(periodEllapsed) {
                 emit EndDefaultingThrift(_thriftID);
                 return !_endDefaultingThrift(_thriftID, curRound, numParticipants);
@@ -130,17 +132,20 @@ contract ThriftManager {
         thrift.numContributionPerRound[curRound] += 1;
         
         // last contribution sholud update relevant thrift state information and disburse funds
+        bool roundCompleted;
         if(thrift.roundContributionCount == numParticipants) {
             thrift.roundCompleted[curRound] = true;
+            roundCompleted = true;
             thrift.roundCompletionTime[curRound] = _timeStamp();
             // disburse funds to round collector and update round 
             address recipientContrib = thrift.contributorsRank[curRound];
             uint256 amount = thrift.roundAmount * numParticipants;
             _sendViaCall(recipientContrib, amount);
             thrift.curRound += 1;
+            thrift.roundContributionCount = 0;      // reset for a new round
         }
-        // thrift is completed
-        if(++curRound == numParticipants) {
+        // thrift is completed at completion of final round
+        if(roundCompleted && curRound+1 == numParticipants) {
             emit CloseThrift(_thriftID);
             thrift.completed = true;
         }
@@ -232,7 +237,7 @@ contract ThriftManager {
     }
 
     modifier thriftExists(uint256 _thriftID) {
-        require(_thriftID < nextThriftId, "Thrift not existence");
+        require(_thriftID < nextThriftId, "Thrift not in existence");
         _;
     }
 
