@@ -7,6 +7,9 @@ contract ThriftManager {
 
     // tracks the thrift count explicitly and ID implicitly
     uint256 public nextThriftId;
+    
+    //
+    uint256 public reserveETH;
 
     // lock to guard reentrancy
     bool lock;
@@ -26,8 +29,8 @@ contract ThriftManager {
         uint256 curRound;                   // tracks the current round count
         uint256 roundContributionCount;     // track participants count that has contributed for every round
         uint256 roundPeriod;                // time allowed for every round
-        uint startTime;                     // tracks time when thrift kickstarts
-        address creator;                    // address that started the thrift
+        uint256 startTime;                  // tracks time when thrift kickstarts
+        uint256 balance;                    // tracks thrift balance at any given time
         bool start;                         // starts when max participants is reached
         bool completed;                     // completed when all participants funds has been disbursed or a paricipant defaults oncontribution
         mapping(uint256 => address payable) contributorsRank;
@@ -63,18 +66,18 @@ contract ThriftManager {
             newThrift.maxParticipants = _maxParticipants;
             newThrift.numParticipants = 1;
             newThrift.roundAmount = _roundAmount;
-            newThrift.creator = _msgSender();
-            newThrift.roundPeriod = _roundPeriod;
-            // newThrift.startTime = _timeStamp();      // instead should start when the last contributor joined
+            newThrift.roundPeriod = _roundPeriod * 1 hours;
             uint256 _minStake = _maxParticipants * _roundAmount;
             newThrift.minStake = _minStake;
             thriftMinStake[nextThriftId] = _minStake;
-            // creator should deposit minimum stake
+            // thrift creator should deposit minimum stake
             require(_msgValue() >= _minStake, "Send Ether amount equivalent to minimum stake");
+            newThrift.balance += _msgValue();
             newThrift.contributorsRank[0] = payable(_msgSender());
             newThrift.contributors[_msgSender()] = true;
             newThrift.hasStaked[_msgSender()] = _msgValue();
             nextThriftId++;
+            reserveETH += _msgValue() - _minStake;
             emit ThriftCreated(_thriftID, _maxParticipants, _minStake, _roundAmount, _timeStamp());
             return (_thriftID, _maxParticipants, _minStake, _roundAmount, _timeStamp());
     }
@@ -85,11 +88,14 @@ contract ThriftManager {
         require(!_hasStarted(_thriftID), "Thrift already started");
         Thrift storage thrift = thrifts[_thriftID];
         uint256 position = thrift.numParticipants;
+        uint256 _minStake = thrift.minStake;
         thrift.numParticipants += 1;
-        require(_msgValue() >= thrift.minStake, "Send Ether amount equivalent to minimum stake");
+        require(_msgValue() >= _minStake, "Send Ether amount equivalent to minimum stake");
+        thrift.balance += _msgValue();
         thrift.contributorsRank[position] = payable(_msgSender());
         thrift.contributors[_msgSender()] = true;
         thrift.hasStaked[_msgSender()] = _msgValue();
+        reserveETH += _msgValue() - _minStake;
         // check if maximum participants is reached
         if(thrift.numParticipants < (thrift.maxParticipants)) {
             return true;
@@ -111,8 +117,11 @@ contract ThriftManager {
         Thrift storage thrift = thrifts[_thriftID];
         uint256 numParticipants = thrift.numParticipants;
         uint256 curRound = thrift.curRound;
+        uint256 _roundAmount = thrift.roundAmount;
         require(thrift.roundContributionAmount[curRound][_msgSender()] == 0, "Cannot contribute twice to a round");
-        require(_msgValue() > 0 && _msgValue() >= thrift.roundAmount, "Ether sent must exceed zero and rount amount");
+        require(_msgValue() > 0 && _msgValue() >= _roundAmount, "Ether sent must exceed zero and rount amount");
+        thrift.balance += _msgValue();
+        reserveETH += _msgValue() - _roundAmount;
         // account for rouund period and close thrift if its been ellapsed
         if(curRound == 0) {
             bool periodEllapsed = _timeStamp() > (thrift.startTime + thrift.roundPeriod);
@@ -141,13 +150,21 @@ contract ThriftManager {
             address recipientContrib = thrift.contributorsRank[curRound];
             uint256 amount = thrift.roundAmount * numParticipants;
             _sendViaCall(recipientContrib, amount);
+            thrift.balance -= amount;
             thrift.curRound += 1;
             thrift.roundContributionCount = 0;      // reset for a new round
         }
         // thrift is completed at completion of final round
         if(roundCompleted && curRound+1 == numParticipants) {
-            emit CloseThrift(_thriftID);
+            // return stake to all contributors
+            for(uint256 i=0; i<numParticipants; i++) {
+                address contribAddress = thrift.contributorsRank[i];
+                uint256 stake = thrift.hasStaked[contribAddress];
+                _sendViaCall(contribAddress, stake);
+                thrift.balance -= stake;
+            }
             thrift.completed = true;
+            emit CloseThrift(_thriftID);
         }
         return true;
     }
@@ -207,13 +224,17 @@ contract ThriftManager {
     function _endDefaultingThrift(uint256 _thriftID, uint256 _curRound, uint256 _numParticipants) internal thriftExists(_thriftID) returns(bool) {
         Thrift storage thrift = thrifts[_thriftID];
         uint256 numRoundContributors = thrift.numContributionPerRound[_curRound];
-        uint256 penaltyFee = (thrift.minStake * _numParticipants) / numRoundContributors;
-        for(uint i=0; i<_numParticipants; i++) {
-            address recipientContrib = thrift.contributorsRank[i];
-            uint256 contributorAmount = thrift.roundContributionAmount[_curRound][recipientContrib];
-            if(contributorAmount > 0) {
-                uint256 payoutAmount = contributorAmount + penaltyFee;
-                _sendViaCall(recipientContrib, payoutAmount);
+        // there must be at least one contributor - prevent zero division
+        if(numRoundContributors > 0) {
+            uint256 penaltyFee = (thrift.minStake * _numParticipants) / numRoundContributors;
+            for(uint i=0; i<_numParticipants; i++) {
+                address recipientContrib = thrift.contributorsRank[i];
+                uint256 contributorAmount = thrift.roundContributionAmount[_curRound][recipientContrib];
+                if(contributorAmount > 0) {
+                    uint256 payoutAmount = contributorAmount + penaltyFee;
+                    _sendViaCall(recipientContrib, payoutAmount);
+                    thrift.balance -= payoutAmount;
+                }
             }
         }
         thrift.completed = true;
@@ -221,12 +242,17 @@ contract ThriftManager {
     }
     
 
-    function _sendViaCall(address _to, uint256 amount) public payable {
+    function _sendViaCall(address _to, uint256 _amount) internal {
         require(!lock, "re-rentrant calls not allowed");
         lock = true;
-        (bool sent,) = payable(_to).call{value: amount}("");
+        (bool sent,) = payable(_to).call{value: _amount}("");
         lock = false;
         require(sent, "Failed to send Ether");
+    }
+
+    function sendReserveETH(address _to, uint256 _amount) public onlyAdmin() {
+        require(_amount <= reserveETH, "Amount must not exceed reserve Eth balance");
+        _sendViaCall(_to, _amount);
     }
 
     // CONTRACT MODIFIERS
@@ -246,7 +272,7 @@ contract ThriftManager {
         _;
     }
 
-    // prevent ether transfers for unknown contract call */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
+    // prevent ether transfers for unknown contract call
     fallback() payable external {
         revert("Unknown contract call ETHER transfer rejected");
     }
